@@ -1,0 +1,17 @@
+[package]
+name = "crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "The FIPS boundary. Safe wrapper over cng; the only non-cng crate allowed to touch cryptographic primitives."
+
+[dependencies]
+cng = { path = "../cng" }
+thiserror.workspace = true
+zeroize.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

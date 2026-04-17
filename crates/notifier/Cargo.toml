@@ -1,0 +1,17 @@
+[package]
+name = "notifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Email (SMTP) and SMS (Twilio) sender traits with pluggable backends."
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+lettre.workspace = true
+serde.workspace = true

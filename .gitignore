@@ -1,0 +1,28 @@
+/target
+**/*.rs.bk
+*.pdb
+*.msi
+
+# Runtime data — never commit CUI or keys
+/data
+/blobs
+/logs
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/config.local.toml
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Claude Code local state (plugin memory, local settings)
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini

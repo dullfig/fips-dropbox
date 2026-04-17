@@ -1,0 +1,17 @@
+[package]
+name = "audit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Append-only, SHA-256 hash-chained JSONL audit log."
+
+[dependencies]
+crypto = { path = "../crypto" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+hex.workspace = true
+uuid.workspace = true

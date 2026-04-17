@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cng",
+    "crates/crypto",
+    "crates/audit",
+    "crates/storage",
+    "crates/service",
+    "crates/web",
+    "crates/notifier",
+    "crates/app",
+    "crates/sender-agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "AGPL-3.0-or-later"
+authors = ["GRM Company <dan@xml-pipeline.org>"]
+repository = "https://github.com/dullfig/fips-dropbox"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
+hex = "0.4"
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled", "uuid", "time"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
+askama = "0.12"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["fs", "trace", "limit"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1-native-tls", "smtp-transport", "builder"] }
+windows-service = "0.7"
+schannel = "0.1"
+toml = "0.8"
+rpassword = "7"
+
+[workspace.dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

@@ -1,0 +1,21 @@
+[package]
+name = "service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Business logic: auth, sessions, vendors, shares. Composes storage + crypto + audit + notifier."
+
+[dependencies]
+crypto = { path = "../crypto" }
+storage = { path = "../storage" }
+audit = { path = "../audit" }
+notifier = { path = "../notifier" }
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde_json.workspace = true

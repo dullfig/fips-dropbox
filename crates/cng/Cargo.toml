@@ -1,0 +1,18 @@
+[package]
+name = "cng"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Unsafe FFI wrappers over Windows CNG (BCrypt/NCrypt). Sole FIPS-inheritance surface for fips-dropbox."
+
+[lib]
+name = "cng"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+zeroize.workspace = true
