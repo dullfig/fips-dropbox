@@ -7,12 +7,14 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+pub mod api_tokens;
 pub mod prints;
 pub mod sessions;
 pub mod shares;
 pub mod users;
 pub mod vendors;
 
+pub use api_tokens::{ApiToken, IssuedApiToken};
 pub use prints::{Print, PrintStore};
 pub use sessions::{IssuedSession, Session};
 pub use shares::{Share, ShareSecrets};

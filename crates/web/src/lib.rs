@@ -43,6 +43,8 @@ pub fn router(app: Arc<service::App>) -> Router {
                 DefaultBodyLimit::max(MAX_UPLOAD_BYTES),
             ),
         )
+        .route("/tokens", get(tokens_get).post(tokens_post))
+        .route("/tokens/:id/revoke", post(token_revoke))
         .route("/r/:token", get(redeem_get).post(redeem_post))
         .route("/health", get(health))
         .with_state(app)
@@ -74,6 +76,27 @@ struct DashboardPage {
 struct RedeemPromptPage {
     token: String,
     error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "tokens.html")]
+struct TokensPage {
+    tokens: Vec<TokenRow>,
+}
+
+struct TokenRow {
+    id: String,
+    label: String,
+    created: String,
+    last_seen: String,
+    revoked: bool,
+}
+
+#[derive(Template)]
+#[template(path = "token_created.html")]
+struct TokenCreatedPage {
+    label: String,
+    raw_token: String,
 }
 
 #[derive(Template)]
@@ -170,6 +193,87 @@ async fn login_post(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// API tokens (admin management of workstation credentials)
+// ---------------------------------------------------------------------------
+
+async fn tokens_get(
+    State(app): State<Arc<service::App>>,
+    user: CurrentUser,
+) -> Result<Html<String>, StatusCode> {
+    let list = app.list_api_tokens(user.0.id).await.map_err(|e| {
+        tracing::error!(?e, "list_api_tokens");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let rows = list
+        .into_iter()
+        .map(|t| TokenRow {
+            id: t.id.to_string(),
+            label: t.label,
+            created: format_dt(t.created_at),
+            last_seen: t
+                .last_seen_at
+                .map(format_dt)
+                .unwrap_or_else(|| "never".to_string()),
+            revoked: t.revoked_at.is_some(),
+        })
+        .collect();
+    render(&TokensPage { tokens: rows })
+}
+
+#[derive(Deserialize)]
+struct TokenMintForm {
+    label: String,
+}
+
+async fn tokens_post(
+    State(app): State<Arc<service::App>>,
+    user: CurrentUser,
+    headers: HeaderMap,
+    Form(form): Form<TokenMintForm>,
+) -> Result<Response, StatusCode> {
+    let label = form.label.trim().to_string();
+    if label.is_empty() {
+        return Ok(Redirect::to("/tokens").into_response());
+    }
+    let issued = app
+        .mint_api_token(user.0.id, label.clone(), client_ip(&headers), user_agent(&headers))
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "mint_api_token");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(render(&TokenCreatedPage {
+        label,
+        raw_token: issued.raw_token,
+    })?
+    .into_response())
+}
+
+async fn token_revoke(
+    State(app): State<Arc<service::App>>,
+    user: CurrentUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Redirect, StatusCode> {
+    let token_id = uuid::Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if let Err(e) = app
+        .revoke_api_token(token_id, user.0.id, client_ip(&headers), user_agent(&headers))
+        .await
+    {
+        tracing::warn!(?e, "revoke_api_token");
+    }
+    Ok(Redirect::to("/tokens"))
+}
+
+fn format_dt(dt: time::OffsetDateTime) -> String {
+    // UTC, YYYY-MM-DD HH:MM — no seconds, no timezone noise
+    let fmt = time::macros::format_description!(
+        "[year]-[month]-[day] [hour]:[minute] UTC"
+    );
+    dt.format(&fmt).unwrap_or_else(|_| "?".to_string())
 }
 
 // ---------------------------------------------------------------------------

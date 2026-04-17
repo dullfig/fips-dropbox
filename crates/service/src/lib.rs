@@ -13,7 +13,9 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-pub use storage::{IssuedSession, Session, Share, User, UserRole, Vendor};
+pub use storage::{
+    ApiToken, IssuedApiToken, IssuedSession, Session, Share, User, UserRole, Vendor,
+};
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
@@ -367,6 +369,103 @@ impl App {
                 content,
                 sha256: print.sha256_plaintext,
             })
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    // ----- API tokens ------------------------------------------------------
+
+    pub async fn mint_api_token(
+        &self,
+        by: Uuid,
+        label: String,
+        ip: String,
+        ua: String,
+    ) -> Result<IssuedApiToken> {
+        let store = self.store.clone();
+        let audit = self.audit.clone();
+        tokio::task::spawn_blocking(move || -> Result<IssuedApiToken> {
+            let s = store.lock().map_err(poisoned)?;
+            let issued = storage::api_tokens::create(&s.conn, &by, &label)?;
+            let mut a = audit.lock().map_err(poisoned)?;
+            write_event(
+                &mut a,
+                "api_token.created",
+                audit::Outcome::Success,
+                Some(by),
+                &ip,
+                &ua,
+                serde_json::json!({ "token_id": issued.token.id.to_string() }),
+                serde_json::json!({ "label": label }),
+            )?;
+            Ok(issued)
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    pub async fn list_api_tokens(&self, user_id: Uuid) -> Result<Vec<ApiToken>> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<ApiToken>> {
+            let s = store.lock().map_err(poisoned)?;
+            Ok(storage::api_tokens::list_for_user(&s.conn, &user_id)?)
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    pub async fn revoke_api_token(
+        &self,
+        token_id: Uuid,
+        by: Uuid,
+        ip: String,
+        ua: String,
+    ) -> Result<()> {
+        let store = self.store.clone();
+        let audit = self.audit.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let s = store.lock().map_err(poisoned)?;
+            storage::api_tokens::revoke(&s.conn, &token_id)?;
+            let mut a = audit.lock().map_err(poisoned)?;
+            write_event(
+                &mut a,
+                "api_token.revoked",
+                audit::Outcome::Success,
+                Some(by),
+                &ip,
+                &ua,
+                serde_json::json!({ "token_id": token_id.to_string() }),
+                serde_json::json!({}),
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    /// Verify a bearer token and resolve to the owning user. Updates
+    /// `last_seen_at` on success. Returns None if the token is unknown,
+    /// revoked, or the owning user is disabled.
+    pub async fn verify_api_token(
+        &self,
+        raw_token: String,
+    ) -> Result<Option<(ApiToken, User)>> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || -> Result<Option<(ApiToken, User)>> {
+            let s = store.lock().map_err(poisoned)?;
+            let token = match storage::api_tokens::find_valid_by_raw(&s.conn, &raw_token)? {
+                Some(t) => t,
+                None => return Ok(None),
+            };
+            let user = match storage::users::find_by_id(&s.conn, &token.user_id)? {
+                Some(u) => u,
+                None => return Ok(None),
+            };
+            if user.disabled_at.is_some() {
+                return Ok(None);
+            }
+            Ok(Some((token, user)))
         })
         .await
         .map_err(|e| ServiceError::Internal(e.to_string()))?

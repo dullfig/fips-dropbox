@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Token generated &middot; fips-dropbox{% endblock %}
+{% block heading %}Token generated{% endblock %}
+{% block header_right %}
+<a href="/tokens">Back to tokens</a>
+{% endblock %}
+{% block content %}
+<div class="card success">
+  <p><strong>Token created for &ldquo;{{ label }}&rdquo;.</strong></p>
+</div>
+
+<div class="card" style="background: #fffdf0; border-color: #e5d98b;">
+  <h2>Token (shown only once)</h2>
+  <p class="mono" style="font-size: 16px; word-break: break-all; padding: 12px; background: white; border: 1px solid #ddd; border-radius: 4px;">{{ raw_token }}</p>
+  <p class="muted"><strong>Copy this now.</strong> If you leave this page without copying, you'll need to revoke and create a new token.</p>
+</div>
+
+<div class="card">
+  <h2>What to do with it</h2>
+  <p>Open the tray agent on the workstation &rarr; Settings &rarr; Server tab &rarr; paste into &ldquo;API token.&rdquo; Click <em>Test connection</em> to verify.</p>
+</div>
+{% endblock %}

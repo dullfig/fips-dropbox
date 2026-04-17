@@ -74,3 +74,19 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- Per-workstation API tokens used by the tray agent (and future CLI/API
+-- consumers). The raw token is shown once at creation; only sha256(raw) is
+-- stored so a DB leak does not compromise any credential.
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id              BLOB PRIMARY KEY,
+    user_id         BLOB NOT NULL REFERENCES users(id),
+    label           TEXT NOT NULL,
+    token_hash      BLOB NOT NULL UNIQUE,
+    created_at      INTEGER NOT NULL,
+    last_seen_at    INTEGER,
+    revoked_at      INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash);
