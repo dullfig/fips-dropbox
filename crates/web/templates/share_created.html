@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Share created &middot; fips-dropbox{% endblock %}
+{% block heading %}Share created{% endblock %}
+{% block header_right %}
+<a href="/shares/new">Send another</a>
+&middot;
+<a href="/">Dashboard</a>
+{% endblock %}
+{% block content %}
+<div class="card success">
+  <p><strong>Share created for {{ vendor_email }}.</strong></p>
+  {% if notifications_sent %}
+    <p class="muted">The recipient has been notified by email{% if sms_sent %} and SMS{% endif %}.</p>
+  {% else %}
+    <p class="muted">No notifier is configured yet &mdash; deliver the link and code manually, as shown below.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Share link (deliver by email)</h2>
+  <p class="mono" style="font-size: 15px; word-break: break-all; padding: 12px; background: white; border: 1px solid #ddd; border-radius: 4px;">{{ share_url }}</p>
+</div>
+
+<div class="card" style="background: #fffdf0; border-color: #e5d98b;">
+  <h2>Access code (deliver by SMS or phone &mdash; not email)</h2>
+  <p class="mono" style="font-size: 24px; letter-spacing: 2px; padding: 12px; background: white; border: 1px solid #ddd; border-radius: 4px; text-align: center;">{{ access_code }}</p>
+  <p class="muted"><strong>This code is shown only once.</strong> If you navigate away without delivering it, the share must be revoked and recreated.</p>
+  {% if let Some(phone) = vendor_phone %}
+    <p class="muted">Recipient phone on file: {{ phone }}</p>
+  {% endif %}
+</div>
+
+<p class="muted" style="margin-top: 24px;">
+  The recipient will open the link, enter the access code, and download the file. All activity is recorded in the audit log.
+</p>
+{% endblock %}

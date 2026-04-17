@@ -14,7 +14,7 @@
 
 use askama::Template;
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -22,6 +22,9 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
+
+/// Max total upload size for /shares/new. 100 MB covers realistic CAD files.
+const MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
 
 mod auth;
 
@@ -34,6 +37,12 @@ pub fn router(app: Arc<service::App>) -> Router {
         .route("/", get(dashboard))
         .route("/login", get(login_get).post(login_post))
         .route("/logout", post(logout_post))
+        .route(
+            "/shares/new",
+            get(share_new_get).post(share_new_post).layer(
+                DefaultBodyLimit::max(MAX_UPLOAD_BYTES),
+            ),
+        )
         .route("/r/:token", get(redeem_get).post(redeem_post))
         .route("/health", get(health))
         .with_state(app)
@@ -65,6 +74,23 @@ struct DashboardPage {
 struct RedeemPromptPage {
     token: String,
     error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "share_new.html")]
+struct ShareNewPage {
+    error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "share_created.html")]
+struct ShareCreatedPage {
+    vendor_email: String,
+    vendor_phone: Option<String>,
+    share_url: String,
+    access_code: String,
+    notifications_sent: bool,
+    sms_sent: bool,
 }
 
 fn render<T: Template>(t: &T) -> Result<Html<String>, StatusCode> {
@@ -141,6 +167,141 @@ async fn login_post(
         .into_response()),
         Err(e) => {
             tracing::error!(?e, "login failure");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Create share
+// ---------------------------------------------------------------------------
+
+async fn share_new_get(_user: CurrentUser) -> Result<Html<String>, StatusCode> {
+    render(&ShareNewPage { error: None })
+}
+
+async fn share_new_post(
+    State(app): State<Arc<service::App>>,
+    user: CurrentUser,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Response, StatusCode> {
+    let mut filename: Option<String> = None;
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut vendor_email: Option<String> = None;
+    let mut vendor_phone: Option<String> = None;
+    let mut vendor_display_name: Option<String> = None;
+    let mut expires_in_hours: u32 = 72;
+    let mut max_downloads: u32 = 3;
+    let mut note: Option<String> = None;
+    let mut cui_attested: bool = false;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "file" => {
+                filename = field.file_name().map(|s| s.to_string());
+                let b = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                file_bytes = Some(b.to_vec());
+            }
+            "vendor_email" => {
+                vendor_email =
+                    Some(field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?);
+            }
+            "vendor_phone" => {
+                let t = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                vendor_phone = if t.trim().is_empty() { None } else { Some(t) };
+            }
+            "vendor_display_name" => {
+                vendor_display_name =
+                    Some(field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?);
+            }
+            "expires_in_hours" => {
+                let t = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                expires_in_hours = t.parse().unwrap_or(72);
+            }
+            "max_downloads" => {
+                let t = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                max_downloads = t.parse().unwrap_or(3);
+            }
+            "note" => {
+                let t = field.text().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                note = if t.trim().is_empty() { None } else { Some(t) };
+            }
+            "cui_attested" => {
+                cui_attested = true;
+            }
+            _ => {
+                let _ = field.bytes().await;
+            }
+        }
+    }
+
+    let filename = match filename {
+        Some(f) if !f.is_empty() => f,
+        _ => {
+            return Ok(render(&ShareNewPage {
+                error: Some("No file selected.".into()),
+            })?
+            .into_response())
+        }
+    };
+    let file_bytes = file_bytes.filter(|b| !b.is_empty()).ok_or(StatusCode::BAD_REQUEST)?;
+    let vendor_email = vendor_email
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let vendor_display_name = vendor_display_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+
+    if !cui_attested {
+        return Ok(render(&ShareNewPage {
+            error: Some(
+                "You must attest that this file is correctly marked before sending.".into(),
+            ),
+        })?
+        .into_response());
+    }
+
+    let has_phone = vendor_phone.is_some();
+    let req = service::NewShareRequest {
+        print_filename: filename,
+        print_bytes: file_bytes,
+        vendor_email: vendor_email.clone(),
+        vendor_phone: vendor_phone.clone(),
+        vendor_display_name,
+        expires_in_hours,
+        max_downloads,
+        note,
+        cui_attested,
+        created_by: user.0.id,
+        ip: client_ip(&headers),
+        user_agent: user_agent(&headers),
+    };
+
+    match app.create_share(req).await {
+        Ok(created) => {
+            // With the default Null notifier, nothing was actually sent. A
+            // follow-up commit will plumb real delivery status back through
+            // service::ShareCreated. For now, assume manual delivery.
+            render(&ShareCreatedPage {
+                vendor_email: created.vendor_email,
+                vendor_phone: created.vendor_phone,
+                share_url: created.share_url,
+                access_code: created.access_code,
+                notifications_sent: false,
+                sms_sent: has_phone,
+            })
+            .map(IntoResponse::into_response)
+        }
+        Err(e) => {
+            tracing::error!(?e, "create_share failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
