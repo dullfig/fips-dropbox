@@ -54,17 +54,23 @@ fn print_usage() {
 }
 
 async fn run_service() -> anyhow::Result<()> {
-    match crypto::assert_fips_mode() {
-        Ok(_) => tracing::info!("FIPS mode: enabled"),
+    let fips_mode_enabled = match crypto::assert_fips_mode() {
+        Ok(_) => {
+            tracing::info!("FIPS mode: enabled");
+            true
+        }
         Err(_) => {
             #[cfg(debug_assertions)]
-            tracing::warn!(
-                "FIPS mode is DISABLED on this host — OK for local dev only, never production"
-            );
+            {
+                tracing::warn!(
+                    "FIPS mode is DISABLED on this host — OK for local dev only, never production"
+                );
+                false
+            }
             #[cfg(not(debug_assertions))]
             anyhow::bail!("FIPS mode is required in release builds");
         }
-    }
+    };
 
     let cfg = config::load(config::config_path())?;
 
@@ -89,6 +95,7 @@ async fn run_service() -> anyhow::Result<()> {
         email,
         sms,
         public_base_url: cfg.public_base_url.clone(),
+        fips_mode_enabled,
     });
 
     let router = web::router(app);

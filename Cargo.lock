@@ -2001,11 +2001,13 @@ name = "web"
 version = "0.1.0"
 dependencies = [
  "askama",
+ "async-trait",
  "axum",
  "serde",
  "serde_json",
  "service",
  "thiserror",
+ "time",
  "tokio",
  "tower",
  "tower-http 0.5.2",

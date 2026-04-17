@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &middot; fips-dropbox{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+{% block header_right %}
+<span class="muted">{{ user_email }}</span>
+<form class="inline" method="post" action="/logout">
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>System status</h2>
+  <p>FIPS mode: <strong>{{ fips_status }}</strong></p>
+  <p>Crypto module: <strong>Windows CNG (CMVP cert #4339)</strong> &mdash; inherited</p>
+</div>
+<div class="card">
+  <h2>Next steps</h2>
+  <p class="muted">Vendor list, outbound shares, audit log, and the right-click send flow are coming in follow-up commits on this feature branch.</p>
+</div>
+{% endblock %}

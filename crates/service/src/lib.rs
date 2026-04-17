@@ -44,6 +44,9 @@ pub struct App {
     pub email: Arc<dyn notifier::EmailSender>,
     pub sms: Arc<dyn notifier::SmsSender>,
     pub public_base_url: String,
+    /// FIPS mode status captured at startup (from BCryptGetFipsAlgorithmMode).
+    /// Static after boot; services restart to re-check.
+    pub fips_mode_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
