@@ -18,17 +18,17 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
-    Form, Router,
+    Form, Json, Router,
 };
 use serde::Deserialize;
 use std::sync::Arc;
 
-/// Max total upload size for /shares/new. 100 MB covers realistic CAD files.
+/// Max total upload size for /shares/new and /api/shares. 100 MB covers realistic CAD files.
 const MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
 
 mod auth;
 
-use auth::CurrentUser;
+use auth::{ApiCaller, ApiError, CurrentUser};
 
 pub const SESSION_COOKIE: &str = "fips_session";
 
@@ -45,6 +45,10 @@ pub fn router(app: Arc<service::App>) -> Router {
         )
         .route("/tokens", get(tokens_get).post(tokens_post))
         .route("/tokens/:id/revoke", post(token_revoke))
+        .route(
+            "/api/shares",
+            post(api_shares_post).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
         .route("/r/:token", get(redeem_get).post(redeem_post))
         .route("/health", get(health))
         .with_state(app)
@@ -427,6 +431,148 @@ async fn logout_post(
     resp.headers_mut()
         .insert(header::SET_COOKIE, clear_session_cookie().parse().unwrap());
     Ok(resp)
+}
+
+// ---------------------------------------------------------------------------
+// /api/shares — tray agent creates shares over bearer-auth
+// ---------------------------------------------------------------------------
+
+async fn api_shares_post(
+    State(app): State<Arc<service::App>>,
+    caller: ApiCaller,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Response, ApiError> {
+    let mut filename: Option<String> = None;
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut vendor_email: Option<String> = None;
+    let mut vendor_phone: Option<String> = None;
+    let mut vendor_display_name: Option<String> = None;
+    let mut expires_in_hours: u32 = 72;
+    let mut max_downloads: u32 = 3;
+    let mut note: Option<String> = None;
+    let mut cui_attested: bool = false;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "malformed multipart"))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "file" => {
+                filename = field.file_name().map(|s| s.to_string());
+                let b = field
+                    .bytes()
+                    .await
+                    .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "failed to read file"))?;
+                file_bytes = Some(b.to_vec());
+            }
+            "vendor_email" => {
+                vendor_email = Some(field.text().await.map_err(|_| {
+                    ApiError::new(StatusCode::BAD_REQUEST, "bad vendor_email")
+                })?);
+            }
+            "vendor_phone" => {
+                let t = field
+                    .text()
+                    .await
+                    .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad vendor_phone"))?;
+                vendor_phone = if t.trim().is_empty() { None } else { Some(t) };
+            }
+            "vendor_display_name" => {
+                vendor_display_name = Some(field.text().await.map_err(|_| {
+                    ApiError::new(StatusCode::BAD_REQUEST, "bad vendor_display_name")
+                })?);
+            }
+            "expires_in_hours" => {
+                let t = field.text().await.map_err(|_| {
+                    ApiError::new(StatusCode::BAD_REQUEST, "bad expires_in_hours")
+                })?;
+                expires_in_hours = t.parse().unwrap_or(72);
+            }
+            "max_downloads" => {
+                let t = field.text().await.map_err(|_| {
+                    ApiError::new(StatusCode::BAD_REQUEST, "bad max_downloads")
+                })?;
+                max_downloads = t.parse().unwrap_or(3);
+            }
+            "note" => {
+                let t = field
+                    .text()
+                    .await
+                    .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "bad note"))?;
+                note = if t.trim().is_empty() { None } else { Some(t) };
+            }
+            "cui_attested" => {
+                let t = field.text().await.unwrap_or_default();
+                let v = t.trim();
+                cui_attested = matches!(v, "1" | "true" | "yes" | "on");
+            }
+            _ => {
+                let _ = field.bytes().await;
+            }
+        }
+    }
+
+    let filename = filename
+        .filter(|f| !f.is_empty())
+        .ok_or(ApiError::new(StatusCode::BAD_REQUEST, "file is required"))?;
+    let file_bytes = file_bytes
+        .filter(|b| !b.is_empty())
+        .ok_or(ApiError::new(StatusCode::BAD_REQUEST, "file is empty"))?;
+    let vendor_email = vendor_email
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .ok_or(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "vendor_email is required",
+        ))?;
+    let vendor_display_name = vendor_display_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "vendor_display_name is required",
+        ))?;
+    if !cui_attested {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "cui_attested must be true",
+        ));
+    }
+
+    let req = service::NewShareRequest {
+        print_filename: filename,
+        print_bytes: file_bytes,
+        vendor_email,
+        vendor_phone,
+        vendor_display_name,
+        expires_in_hours,
+        max_downloads,
+        note,
+        cui_attested,
+        created_by: caller.user.id,
+        ip: client_ip(&headers),
+        user_agent: user_agent(&headers),
+    };
+
+    let created = app.create_share(req).await.map_err(|e| {
+        tracing::error!(?e, token_id = %caller.token.id, "api create_share failed");
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "create_share failed")
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "share_id": created.share_id.to_string(),
+            "share_url": created.share_url,
+            "access_code": created.access_code,
+            "vendor_email": created.vendor_email,
+            "vendor_phone": created.vendor_phone,
+        })),
+    )
+        .into_response())
 }
 
 // ---------------------------------------------------------------------------
