@@ -17,7 +17,7 @@ pub mod vendors;
 pub use api_tokens::{ApiToken, IssuedApiToken};
 pub use prints::{Print, PrintStore};
 pub use sessions::{IssuedSession, Session};
-pub use shares::{Share, ShareSecrets};
+pub use shares::{Share, ShareListItem, ShareSecrets};
 pub use users::{User, UserRole};
 pub use vendors::Vendor;
 

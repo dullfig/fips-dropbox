@@ -43,6 +43,8 @@ pub fn router(app: Arc<service::App>) -> Router {
                 DefaultBodyLimit::max(MAX_UPLOAD_BYTES),
             ),
         )
+        .route("/shares", get(shares_list_get))
+        .route("/shares/:id/revoke", post(share_revoke))
         .route("/tokens", get(tokens_get).post(tokens_post))
         .route("/tokens/:id/revoke", post(token_revoke))
         .route(
@@ -80,6 +82,27 @@ struct DashboardPage {
 struct RedeemPromptPage {
     token: String,
     error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "shares.html")]
+struct SharesPage {
+    shares: Vec<ShareRow>,
+}
+
+struct ShareRow {
+    id: String,
+    vendor_name: String,
+    vendor_email: String,
+    filename: String,
+    size_kb: u64,
+    created: String,
+    expires: String,
+    max_downloads: u32,
+    download_count: u32,
+    status: &'static str,
+    is_active: bool,
+    note: Option<String>,
 }
 
 #[derive(Template)]
@@ -197,6 +220,54 @@ async fn login_post(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Outbound shares — list + revoke
+// ---------------------------------------------------------------------------
+
+async fn shares_list_get(
+    State(app): State<Arc<service::App>>,
+    _user: CurrentUser,
+) -> Result<Html<String>, StatusCode> {
+    let list = app.list_recent_shares(100).await.map_err(|e| {
+        tracing::error!(?e, "list_recent_shares");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let shares = list
+        .into_iter()
+        .map(|s| ShareRow {
+            id: s.id.to_string(),
+            vendor_name: s.vendor_name.clone(),
+            vendor_email: s.vendor_email.clone(),
+            filename: s.filename.clone(),
+            size_kb: (s.size_bytes + 1023) / 1024,
+            created: format_dt(s.created_at),
+            expires: format_dt(s.expires_at),
+            max_downloads: s.max_downloads,
+            download_count: s.download_count,
+            is_active: s.is_active(),
+            status: s.status_label(),
+            note: s.sender_note.clone(),
+        })
+        .collect();
+    render(&SharesPage { shares })
+}
+
+async fn share_revoke(
+    State(app): State<Arc<service::App>>,
+    user: CurrentUser,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Redirect, StatusCode> {
+    let share_id = uuid::Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if let Err(e) = app
+        .revoke_share(share_id, user.0.id, client_ip(&headers), user_agent(&headers))
+        .await
+    {
+        tracing::warn!(?e, "revoke_share");
+    }
+    Ok(Redirect::to("/shares"))
 }
 
 // ---------------------------------------------------------------------------

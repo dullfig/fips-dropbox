@@ -14,7 +14,8 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 pub use storage::{
-    ApiToken, IssuedApiToken, IssuedSession, Session, Share, User, UserRole, Vendor,
+    ApiToken, IssuedApiToken, IssuedSession, Session, Share, ShareListItem, User, UserRole,
+    Vendor,
 };
 
 #[derive(Debug, Error)]
@@ -466,6 +467,16 @@ impl App {
                 return Ok(None);
             }
             Ok(Some((token, user)))
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    pub async fn list_recent_shares(&self, limit: u32) -> Result<Vec<ShareListItem>> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<ShareListItem>> {
+            let s = store.lock().map_err(poisoned)?;
+            Ok(storage::shares::list_recent(&s.conn, limit)?)
         })
         .await
         .map_err(|e| ServiceError::Internal(e.to_string()))?
