@@ -118,27 +118,49 @@ impl App {
 
         tokio::task::spawn_blocking(move || -> Result<IssuedSession> {
             let s = store.lock().map_err(poisoned)?;
-            let user = storage::users::verify_password(&s.conn, &req.email, &req.password)?
-                .ok_or(ServiceError::InvalidCredentials)?;
-            let issued = storage::sessions::create(
-                &s.conn,
-                &user.id,
-                &req.ip,
-                &req.user_agent,
-                storage::sessions::DEFAULT_TTL_HOURS,
-            )?;
-            let mut a = audit.lock().map_err(poisoned)?;
-            write_event(
-                &mut a,
-                "auth.login",
-                audit::Outcome::Success,
-                Some(user.id),
-                &req.ip,
-                &req.user_agent,
-                serde_json::json!({ "user_id": user.id.to_string() }),
-                serde_json::json!({}),
-            )?;
-            Ok(issued)
+            let maybe_user =
+                storage::users::verify_password(&s.conn, &req.email, &req.password)?;
+            match maybe_user {
+                Some(user) => {
+                    let issued = storage::sessions::create(
+                        &s.conn,
+                        &user.id,
+                        &req.ip,
+                        &req.user_agent,
+                        storage::sessions::DEFAULT_TTL_HOURS,
+                    )?;
+                    let mut a = audit.lock().map_err(poisoned)?;
+                    write_event(
+                        &mut a,
+                        "auth.login",
+                        audit::Outcome::Success,
+                        Some(user.id),
+                        &req.ip,
+                        &req.user_agent,
+                        serde_json::json!({ "user_id": user.id.to_string() }),
+                        serde_json::json!({}),
+                    )?;
+                    Ok(issued)
+                }
+                None => {
+                    // Record the denied attempt. The email is stored as the
+                    // target (for brute-force pattern detection) but we do NOT
+                    // distinguish "wrong password" from "no such user" from
+                    // "disabled account" — that'd leak account enumeration.
+                    let mut a = audit.lock().map_err(poisoned)?;
+                    write_event(
+                        &mut a,
+                        "auth.login",
+                        audit::Outcome::Denied,
+                        None,
+                        &req.ip,
+                        &req.user_agent,
+                        serde_json::json!({ "email": req.email }),
+                        serde_json::json!({ "reason": "invalid credentials" }),
+                    )?;
+                    Err(ServiceError::InvalidCredentials)
+                }
+            }
         })
         .await
         .map_err(|e| ServiceError::Internal(e.to_string()))?
@@ -313,8 +335,23 @@ impl App {
             let s = store.lock().map_err(poisoned)?;
 
             let token_hash = crypto::hash::sha256(req.token.as_bytes())?;
-            let share = storage::shares::find_by_token_hash(&s.conn, &token_hash)?
-                .ok_or(ServiceError::NotFound)?;
+            let share = match storage::shares::find_by_token_hash(&s.conn, &token_hash)? {
+                Some(s) => s,
+                None => {
+                    let mut a = audit.lock().map_err(poisoned)?;
+                    write_event(
+                        &mut a,
+                        "share.redeem",
+                        audit::Outcome::Denied,
+                        None,
+                        &req.ip,
+                        &req.user_agent,
+                        serde_json::json!({ "token_prefix": short_token(&req.token) }),
+                        serde_json::json!({ "reason": "unknown_token" }),
+                    )?;
+                    return Err(ServiceError::NotFound);
+                }
+            };
 
             if !storage::shares::verify_access_code(&share, &req.access_code)? {
                 let mut a = audit.lock().map_err(poisoned)?;
@@ -560,6 +597,17 @@ impl App {
 
 fn poisoned<T>(_: std::sync::PoisonError<T>) -> ServiceError {
     ServiceError::Internal("mutex poisoned".into())
+}
+
+/// Truncate a redeem URL token for audit logs — full token is a secret, but
+/// a short prefix helps an assessor correlate denied attempts without
+/// exposing the whole credential.
+fn short_token(t: &str) -> String {
+    if t.len() > 6 {
+        format!("{}…", &t[..6])
+    } else {
+        t.to_string()
+    }
 }
 
 fn write_event(
