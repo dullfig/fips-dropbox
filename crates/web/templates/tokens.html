@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}API tokens &middot; fips-dropbox{% endblock %}
+{% block heading %}API tokens{% endblock %}
+{% block header_right %}
+<a href="/">Back to dashboard</a>
+{% endblock %}
+{% block content %}
+<div class="card">
+  <p>Create one token per workstation that runs the tray agent. The raw token is shown only once &mdash; paste it into the agent's Settings &rarr; Server tab.</p>
+  <form method="post" action="/tokens">
+    <label>Label for this workstation <input type="text" name="label" required placeholder="Dan's desktop" maxlength="64"></label>
+    <div style="margin-top: 16px;"><button type="submit">Generate token</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Existing tokens</h2>
+  {% if tokens.is_empty() %}
+    <p class="muted">No tokens yet.</p>
+  {% else %}
+    <table style="width: 100%; border-collapse: collapse;">
+      <thead>
+        <tr style="text-align: left; border-bottom: 1px solid #ddd;">
+          <th style="padding: 8px 4px;">Label</th>
+          <th style="padding: 8px 4px;">Created</th>
+          <th style="padding: 8px 4px;">Last seen</th>
+          <th style="padding: 8px 4px;">Status</th>
+          <th style="padding: 8px 4px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+          <td style="padding: 8px 4px;">{{ t.label }}</td>
+          <td style="padding: 8px 4px;" class="muted">{{ t.created }}</td>
+          <td style="padding: 8px 4px;" class="muted">{{ t.last_seen }}</td>
+          <td style="padding: 8px 4px;">
+            {% if t.revoked %}<span style="color: #a33;">revoked</span>
+            {% else %}<span style="color: #186329;">active</span>
+            {% endif %}
+          </td>
+          <td style="padding: 8px 4px; text-align: right;">
+            {% if !t.revoked %}
+            <form class="inline" method="post" action="/tokens/{{ t.id }}/revoke" onsubmit="return confirm('Revoke this token? The workstation will immediately lose access.');">
+              <button type="submit" style="background: #a33;">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+{% endblock %}

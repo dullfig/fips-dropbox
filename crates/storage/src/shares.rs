@@ -33,6 +33,56 @@ pub struct ShareSecrets {
     pub access_code: String,
 }
 
+/// A share joined with its vendor and print — the view model for the admin
+/// list page. Carries no secrets.
+#[derive(Debug, Clone)]
+pub struct ShareListItem {
+    pub id: Uuid,
+    pub vendor_name: String,
+    pub vendor_email: String,
+    pub filename: String,
+    pub size_bytes: u64,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+    pub max_downloads: u32,
+    pub download_count: u32,
+    pub revoked_at: Option<OffsetDateTime>,
+    pub sender_note: Option<String>,
+}
+
+impl ShareListItem {
+    pub fn is_revoked(&self) -> bool {
+        self.revoked_at.is_some()
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.expires_at < OffsetDateTime::now_utc()
+    }
+
+    pub fn is_exhausted(&self) -> bool {
+        self.download_count >= self.max_downloads
+    }
+
+    pub fn is_active(&self) -> bool {
+        !self.is_revoked() && !self.is_expired() && !self.is_exhausted()
+    }
+
+    /// Human-readable status label for the UI. Precedence: revoked > expired
+    /// > exhausted > active. (A revoked-then-also-expired share displays as
+    /// "revoked" because that's the more actionable fact.)
+    pub fn status_label(&self) -> &'static str {
+        if self.is_revoked() {
+            "revoked"
+        } else if self.is_expired() {
+            "expired"
+        } else if self.is_exhausted() {
+            "downloaded"
+        } else {
+            "active"
+        }
+    }
+}
+
 pub fn create(
     conn: &Connection,
     print_id: &Uuid,
@@ -151,6 +201,54 @@ pub fn revoke(conn: &Connection, share_id: &Uuid) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Recent shares with vendor and filename joined, newest first.
+pub fn list_recent(conn: &Connection, limit: u32) -> Result<Vec<ShareListItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, v.display_name, v.primary_email,
+                p.filename, p.size_bytes,
+                s.created_at, s.expires_at, s.max_downloads, s.download_count,
+                s.revoked_at, s.sender_note
+         FROM shares s
+         JOIN vendors v ON s.vendor_id = v.id
+         JOIN prints  p ON s.print_id  = p.id
+         ORDER BY s.created_at DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit as i64], row_to_list_item)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+fn row_to_list_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShareListItem> {
+    let id_blob: Vec<u8> = row.get(0)?;
+    let id = Uuid::from_slice(&id_blob).map_err(|_| {
+        rusqlite::Error::InvalidColumnType(0, "id".into(), rusqlite::types::Type::Blob)
+    })?;
+    let created_at_ms: i64 = row.get(5)?;
+    let expires_at_ms: i64 = row.get(6)?;
+    let max_downloads: i64 = row.get(7)?;
+    let download_count: i64 = row.get(8)?;
+    let revoked_at_ms: Option<i64> = row.get(9)?;
+    let size_bytes: i64 = row.get(4)?;
+
+    Ok(ShareListItem {
+        id,
+        vendor_name: row.get(1)?,
+        vendor_email: row.get(2)?,
+        filename: row.get(3)?,
+        size_bytes: size_bytes as u64,
+        created_at: millis_to_dt(created_at_ms),
+        expires_at: millis_to_dt(expires_at_ms),
+        max_downloads: max_downloads as u32,
+        download_count: download_count as u32,
+        revoked_at: revoked_at_ms.map(millis_to_dt),
+        sender_note: row.get(10)?,
+    })
 }
 
 pub fn list_by_vendor(conn: &Connection, vendor_id: &Uuid) -> Result<Vec<Share>> {
@@ -327,6 +425,47 @@ mod tests {
         let expires = OffsetDateTime::now_utc() - Duration::seconds(1);
         let (share, _) = create(&conn, &print_id, &vendor, expires, 5, None, &admin).unwrap();
         assert!(!try_consume_download(&conn, &share.id).unwrap());
+    }
+
+    #[test]
+    fn list_recent_joins_vendor_and_print() {
+        let (_d, conn, _kek, admin, vendor, print_id) = scaffold();
+        let expires = OffsetDateTime::now_utc() + Duration::hours(72);
+        let (s, _) = create(&conn, &print_id, &vendor, expires, 3, Some("rev C"), &admin).unwrap();
+        let list = list_recent(&conn, 10).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, s.id);
+        assert_eq!(list[0].vendor_name, "Acme");
+        assert_eq!(list[0].vendor_email, "tom@acme.com");
+        assert_eq!(list[0].filename, "drawing.pdf");
+        assert_eq!(list[0].max_downloads, 3);
+        assert_eq!(list[0].download_count, 0);
+        assert!(list[0].is_active());
+        assert_eq!(list[0].status_label(), "active");
+    }
+
+    #[test]
+    fn list_recent_status_transitions() {
+        let (_d, conn, _kek, admin, vendor, print_id) = scaffold();
+        let future = OffsetDateTime::now_utc() + Duration::hours(72);
+        let past = OffsetDateTime::now_utc() - Duration::seconds(1);
+
+        // Active
+        create(&conn, &print_id, &vendor, future, 1, None, &admin).unwrap();
+        // Expired
+        create(&conn, &print_id, &vendor, past, 1, None, &admin).unwrap();
+        // Revoked (active but then revoked)
+        let (s3, _) = create(&conn, &print_id, &vendor, future, 1, None, &admin).unwrap();
+        revoke(&conn, &s3.id).unwrap();
+        // Exhausted
+        let (s4, _) = create(&conn, &print_id, &vendor, future, 1, None, &admin).unwrap();
+        try_consume_download(&conn, &s4.id).unwrap();
+
+        let list = list_recent(&conn, 10).unwrap();
+        assert_eq!(list.len(), 4);
+        let mut labels: Vec<&str> = list.iter().map(|s| s.status_label()).collect();
+        labels.sort();
+        assert_eq!(labels, vec!["active", "downloaded", "expired", "revoked"]);
     }
 
     #[test]

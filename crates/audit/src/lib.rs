@@ -72,6 +72,10 @@ impl Log {
         Ok(Self { path, prev_hash })
     }
 
+    pub fn read_all(&self) -> Result<Vec<Event>> {
+        read_all(&self.path)
+    }
+
     pub fn write(&mut self, mut ev: Event) -> Result<()> {
         ev.prev_hash = self.prev_hash.clone();
         ev.hash = String::new();
@@ -93,6 +97,66 @@ impl Log {
     }
 }
 
+/// Read all events from an audit log file, in chronological order (oldest first).
+/// Returns an empty Vec if the file does not exist. Blank lines are skipped.
+pub fn read_all(path: impl AsRef<Path>) -> Result<Vec<Event>> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let contents = std::fs::read_to_string(path)?;
+    let mut events = Vec::with_capacity(contents.lines().count());
+    for line in contents.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        events.push(serde_json::from_str::<Event>(line)?);
+    }
+    Ok(events)
+}
+
+#[derive(Debug, Clone)]
+pub struct ChainVerification {
+    pub valid: bool,
+    /// Zero-based index of the first event that broke the chain, if any.
+    pub break_at: Option<usize>,
+    pub events_checked: usize,
+}
+
+/// Walk `events` (must be in chronological order) and verify each event's
+/// `prev_hash` points at the preceding event's `hash`, and that each `hash`
+/// is a correct SHA-256 of the event's canonical form (with `hash` cleared).
+pub fn verify_chain(events: &[Event]) -> Result<ChainVerification> {
+    let mut expected_prev = GENESIS_HASH.to_string();
+    for (i, ev) in events.iter().enumerate() {
+        if ev.prev_hash != expected_prev {
+            return Ok(ChainVerification {
+                valid: false,
+                break_at: Some(i),
+                events_checked: i,
+            });
+        }
+        let mut check_ev = ev.clone();
+        check_ev.hash = String::new();
+        let canonical = serde_json::to_vec(&check_ev)?;
+        let digest = crypto::hash::sha256(&canonical)?;
+        let computed = hex::encode(digest);
+        if computed != ev.hash {
+            return Ok(ChainVerification {
+                valid: false,
+                break_at: Some(i),
+                events_checked: i,
+            });
+        }
+        expected_prev = ev.hash.clone();
+    }
+    Ok(ChainVerification {
+        valid: true,
+        break_at: None,
+        events_checked: events.len(),
+    })
+}
+
 fn load_last_hash(path: &Path) -> Result<String> {
     if !path.exists() {
         return Ok(GENESIS_HASH.to_string());
@@ -107,5 +171,84 @@ fn load_last_hash(path: &Path) -> Result<String> {
             Ok(ev.hash)
         }
         None => Ok(GENESIS_HASH.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn sample_event(name: &str) -> Event {
+        Event {
+            ts: OffsetDateTime::UNIX_EPOCH,
+            event: name.into(),
+            actor: Actor {
+                user_id: None,
+                ip: "127.0.0.1".into(),
+                ua: "test".into(),
+            },
+            target: serde_json::json!({}),
+            outcome: Outcome::Success,
+            meta: serde_json::json!({}),
+            prev_hash: String::new(),
+            hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn write_read_verify_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a.jsonl");
+        let mut log = Log::open(&path).unwrap();
+        log.write(sample_event("auth.login")).unwrap();
+        log.write(sample_event("share.created")).unwrap();
+        log.write(sample_event("share.redeem")).unwrap();
+
+        let events = read_all(&path).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].event, "auth.login");
+        assert_eq!(events[0].prev_hash, GENESIS_HASH);
+        assert_eq!(events[1].prev_hash, events[0].hash);
+        assert_eq!(events[2].prev_hash, events[1].hash);
+
+        let v = verify_chain(&events).unwrap();
+        assert!(v.valid);
+        assert_eq!(v.events_checked, 3);
+        assert!(v.break_at.is_none());
+    }
+
+    #[test]
+    fn verify_detects_tampering() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a.jsonl");
+        let mut log = Log::open(&path).unwrap();
+        log.write(sample_event("a")).unwrap();
+        log.write(sample_event("b")).unwrap();
+        log.write(sample_event("c")).unwrap();
+
+        let mut events = read_all(&path).unwrap();
+        // Tamper with the middle event's meta — its stored hash no longer matches
+        // the recomputed hash of the tampered content.
+        events[1].meta = serde_json::json!({ "tampered": true });
+        let v = verify_chain(&events).unwrap();
+        assert!(!v.valid);
+        assert_eq!(v.break_at, Some(1));
+    }
+
+    #[test]
+    fn verify_detects_chain_break() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a.jsonl");
+        let mut log = Log::open(&path).unwrap();
+        log.write(sample_event("a")).unwrap();
+        log.write(sample_event("b")).unwrap();
+
+        let mut events = read_all(&path).unwrap();
+        // Replace prev_hash with something that doesn't match event 0's hash.
+        events[1].prev_hash = "0".repeat(64);
+        let v = verify_chain(&events).unwrap();
+        assert!(!v.valid);
+        assert_eq!(v.break_at, Some(1));
     }
 }

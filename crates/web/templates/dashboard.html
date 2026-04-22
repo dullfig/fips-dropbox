@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &middot; fips-dropbox{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+{% block header_right %}
+<span class="muted">{{ user_email }}</span>
+<form class="inline" method="post" action="/logout">
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>System status</h2>
+  <p>FIPS mode: <strong>{{ fips_status }}</strong></p>
+  <p>Crypto module: <strong>Windows CNG (CMVP cert #4339)</strong> &mdash; inherited</p>
+</div>
+<div class="card">
+  <h2>Send a file</h2>
+  <p>Upload a file, pick a recipient, and we'll generate a one-time share link and access code for delivery.</p>
+  <p style="margin-top: 16px;">
+    <a href="/shares/new"><button type="button">Send a file</button></a>
+    <a href="/shares" style="margin-left: 12px;">View outbound shares &rarr;</a>
+  </p>
+</div>
+<div class="card">
+  <h2>Workstation agents</h2>
+  <p>Generate API tokens for the tray agents running on your shop's workstations.</p>
+  <p style="margin-top: 16px;"><a href="/tokens"><button type="button">Manage tokens</button></a></p>
+</div>
+<div class="card">
+  <h2>Audit log</h2>
+  <p>Every authentication, share, and revocation is hash-chained and append-only. Export for your C3PAO.</p>
+  <p style="margin-top: 16px;"><a href="/audit"><button type="button">View audit log</button></a></p>
+</div>
+<div class="card">
+  <h2>Coming soon</h2>
+  <p class="muted">Vendor list, outbound-share history with revoke, audit log viewer, and the right-click Explorer integration.</p>
+</div>
+{% endblock %}

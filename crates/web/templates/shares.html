@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Shares &middot; fips-dropbox{% endblock %}
+{% block heading %}Outbound shares{% endblock %}
+{% block header_right %}
+<a href="/shares/new">Send another</a>
+&middot;
+<a href="/">Dashboard</a>
+{% endblock %}
+{% block content %}
+<div class="card">
+  {% if shares.is_empty() %}
+    <p class="muted">No shares yet. <a href="/shares/new">Send the first one</a>.</p>
+  {% else %}
+    <table style="width: 100%; border-collapse: collapse;">
+      <thead>
+        <tr style="text-align: left; border-bottom: 1px solid #ddd;">
+          <th style="padding: 8px 4px;">Created</th>
+          <th style="padding: 8px 4px;">Vendor</th>
+          <th style="padding: 8px 4px;">File</th>
+          <th style="padding: 8px 4px;">Size</th>
+          <th style="padding: 8px 4px;">Downloads</th>
+          <th style="padding: 8px 4px;">Expires</th>
+          <th style="padding: 8px 4px;">Status</th>
+          <th style="padding: 8px 4px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in shares %}
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+          <td style="padding: 8px 4px;" class="muted">{{ s.created }}</td>
+          <td style="padding: 8px 4px;">
+            <div>{{ s.vendor_name }}</div>
+            <div class="muted" style="font-size: 12px;">{{ s.vendor_email }}</div>
+          </td>
+          <td style="padding: 8px 4px;">
+            <div>{{ s.filename }}</div>
+            {% if let Some(note) = s.note %}<div class="muted" style="font-size: 12px;">{{ note }}</div>{% endif %}
+          </td>
+          <td style="padding: 8px 4px;" class="muted">{{ s.size_kb }} KB</td>
+          <td style="padding: 8px 4px;">{{ s.download_count }}&nbsp;/&nbsp;{{ s.max_downloads }}</td>
+          <td style="padding: 8px 4px;" class="muted">{{ s.expires }}</td>
+          <td style="padding: 8px 4px;">
+            {% if s.status == "active" %}<span style="color: #186329;">active</span>
+            {% else if s.status == "revoked" %}<span style="color: #a33;">revoked</span>
+            {% else if s.status == "expired" %}<span style="color: #999;">expired</span>
+            {% else %}<span style="color: #0366d6;">{{ s.status }}</span>
+            {% endif %}
+          </td>
+          <td style="padding: 8px 4px; text-align: right;">
+            {% if s.is_active %}
+            <form class="inline" method="post" action="/shares/{{ s.id }}/revoke" onsubmit="return confirm('Revoke this share? The vendor will no longer be able to download.');">
+              <button type="submit" style="background: #a33;">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+{% endblock %}

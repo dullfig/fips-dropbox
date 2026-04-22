@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Send a file &middot; fips-dropbox{% endblock %}
+{% block heading %}Send a file{% endblock %}
+{% block header_right %}
+<a href="/">Back to dashboard</a>
+{% endblock %}
+{% block content %}
+{% if let Some(msg) = error %}<div class="card error">{{ msg }}</div>{% endif %}
+<form class="card" method="post" action="/shares/new" enctype="multipart/form-data">
+  <label>File <input type="file" name="file" required></label>
+
+  <h2 style="margin-top: 24px;">Recipient</h2>
+  <label>Company name <input type="text" name="vendor_display_name" required placeholder="Acme Tool &amp; Die"></label>
+  <label>Email <input type="email" name="vendor_email" required placeholder="tom@acmetoolndie.com"></label>
+  <label>Phone (optional — for SMS access code) <input type="text" name="vendor_phone" placeholder="+1 555-123-9999"></label>
+
+  <h2 style="margin-top: 24px;">Options</h2>
+  <label>Expires in
+    <select name="expires_in_hours">
+      <option value="24">24 hours</option>
+      <option value="72" selected>72 hours</option>
+      <option value="168">7 days</option>
+      <option value="720">30 days</option>
+    </select>
+  </label>
+  <label>Maximum downloads
+    <select name="max_downloads">
+      <option value="1">1 (single download)</option>
+      <option value="3" selected>3</option>
+      <option value="10">10</option>
+      <option value="1000000">unlimited</option>
+    </select>
+  </label>
+  <label>Note to recipient (optional)
+    <input type="text" name="note" placeholder="Rev C — supersedes the earlier revision">
+  </label>
+
+  <div class="card" style="margin-top: 20px; background: #fffdf0; border-color: #e5d98b;">
+    <label style="display: flex; align-items: flex-start; gap: 8px;">
+      <input type="checkbox" name="cui_attested" value="1" required style="width: auto; margin-top: 4px;">
+      <span>I attest this file is correctly marked as CUI (or is public information not subject to CUI handling) and that this recipient is authorized to receive it.</span>
+    </label>
+  </div>
+
+  <div style="margin-top: 16px;"><button type="submit">Send</button></div>
+</form>
+{% endblock %}

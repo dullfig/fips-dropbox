@@ -13,7 +13,10 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-pub use storage::{IssuedSession, Session, Share, User, UserRole, Vendor};
+pub use storage::{
+    ApiToken, IssuedApiToken, IssuedSession, Session, Share, ShareListItem, User, UserRole,
+    Vendor,
+};
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
@@ -44,6 +47,9 @@ pub struct App {
     pub email: Arc<dyn notifier::EmailSender>,
     pub sms: Arc<dyn notifier::SmsSender>,
     pub public_base_url: String,
+    /// FIPS mode status captured at startup (from BCryptGetFipsAlgorithmMode).
+    /// Static after boot; services restart to re-check.
+    pub fips_mode_enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +99,12 @@ pub struct RedeemResponse {
     pub sha256: [u8; 32],
 }
 
+pub struct AuditView {
+    pub events: Vec<audit::Event>,
+    pub verification: audit::ChainVerification,
+    pub total_on_disk: usize,
+}
+
 // ---------------------------------------------------------------------------
 // App methods
 // ---------------------------------------------------------------------------
@@ -106,27 +118,49 @@ impl App {
 
         tokio::task::spawn_blocking(move || -> Result<IssuedSession> {
             let s = store.lock().map_err(poisoned)?;
-            let user = storage::users::verify_password(&s.conn, &req.email, &req.password)?
-                .ok_or(ServiceError::InvalidCredentials)?;
-            let issued = storage::sessions::create(
-                &s.conn,
-                &user.id,
-                &req.ip,
-                &req.user_agent,
-                storage::sessions::DEFAULT_TTL_HOURS,
-            )?;
-            let mut a = audit.lock().map_err(poisoned)?;
-            write_event(
-                &mut a,
-                "auth.login",
-                audit::Outcome::Success,
-                Some(user.id),
-                &req.ip,
-                &req.user_agent,
-                serde_json::json!({ "user_id": user.id.to_string() }),
-                serde_json::json!({}),
-            )?;
-            Ok(issued)
+            let maybe_user =
+                storage::users::verify_password(&s.conn, &req.email, &req.password)?;
+            match maybe_user {
+                Some(user) => {
+                    let issued = storage::sessions::create(
+                        &s.conn,
+                        &user.id,
+                        &req.ip,
+                        &req.user_agent,
+                        storage::sessions::DEFAULT_TTL_HOURS,
+                    )?;
+                    let mut a = audit.lock().map_err(poisoned)?;
+                    write_event(
+                        &mut a,
+                        "auth.login",
+                        audit::Outcome::Success,
+                        Some(user.id),
+                        &req.ip,
+                        &req.user_agent,
+                        serde_json::json!({ "user_id": user.id.to_string() }),
+                        serde_json::json!({}),
+                    )?;
+                    Ok(issued)
+                }
+                None => {
+                    // Record the denied attempt. The email is stored as the
+                    // target (for brute-force pattern detection) but we do NOT
+                    // distinguish "wrong password" from "no such user" from
+                    // "disabled account" — that'd leak account enumeration.
+                    let mut a = audit.lock().map_err(poisoned)?;
+                    write_event(
+                        &mut a,
+                        "auth.login",
+                        audit::Outcome::Denied,
+                        None,
+                        &req.ip,
+                        &req.user_agent,
+                        serde_json::json!({ "email": req.email }),
+                        serde_json::json!({ "reason": "invalid credentials" }),
+                    )?;
+                    Err(ServiceError::InvalidCredentials)
+                }
+            }
         })
         .await
         .map_err(|e| ServiceError::Internal(e.to_string()))?
@@ -301,8 +335,23 @@ impl App {
             let s = store.lock().map_err(poisoned)?;
 
             let token_hash = crypto::hash::sha256(req.token.as_bytes())?;
-            let share = storage::shares::find_by_token_hash(&s.conn, &token_hash)?
-                .ok_or(ServiceError::NotFound)?;
+            let share = match storage::shares::find_by_token_hash(&s.conn, &token_hash)? {
+                Some(s) => s,
+                None => {
+                    let mut a = audit.lock().map_err(poisoned)?;
+                    write_event(
+                        &mut a,
+                        "share.redeem",
+                        audit::Outcome::Denied,
+                        None,
+                        &req.ip,
+                        &req.user_agent,
+                        serde_json::json!({ "token_prefix": short_token(&req.token) }),
+                        serde_json::json!({ "reason": "unknown_token" }),
+                    )?;
+                    return Err(ServiceError::NotFound);
+                }
+            };
 
             if !storage::shares::verify_access_code(&share, &req.access_code)? {
                 let mut a = audit.lock().map_err(poisoned)?;
@@ -369,6 +418,149 @@ impl App {
         .map_err(|e| ServiceError::Internal(e.to_string()))?
     }
 
+    // ----- Audit log -------------------------------------------------------
+
+    pub async fn list_audit_events(
+        &self,
+        event_prefix: Option<String>,
+        limit: usize,
+    ) -> Result<AuditView> {
+        let audit = self.audit.clone();
+        tokio::task::spawn_blocking(move || -> Result<AuditView> {
+            let log = audit.lock().map_err(poisoned)?;
+            let all = log.read_all()?;
+            let total_on_disk = all.len();
+            let verification = audit::verify_chain(&all)?;
+
+            let filtered: Vec<audit::Event> = match event_prefix.as_deref() {
+                Some(p) if !p.is_empty() => all
+                    .into_iter()
+                    .filter(|e| e.event.starts_with(p))
+                    .collect(),
+                _ => all,
+            };
+            let start = filtered.len().saturating_sub(limit);
+            let mut page: Vec<audit::Event> =
+                filtered.into_iter().skip(start).collect();
+            // Newest first for display.
+            page.reverse();
+            Ok(AuditView {
+                events: page,
+                verification,
+                total_on_disk,
+            })
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    // ----- API tokens ------------------------------------------------------
+
+    pub async fn mint_api_token(
+        &self,
+        by: Uuid,
+        label: String,
+        ip: String,
+        ua: String,
+    ) -> Result<IssuedApiToken> {
+        let store = self.store.clone();
+        let audit = self.audit.clone();
+        tokio::task::spawn_blocking(move || -> Result<IssuedApiToken> {
+            let s = store.lock().map_err(poisoned)?;
+            let issued = storage::api_tokens::create(&s.conn, &by, &label)?;
+            let mut a = audit.lock().map_err(poisoned)?;
+            write_event(
+                &mut a,
+                "api_token.created",
+                audit::Outcome::Success,
+                Some(by),
+                &ip,
+                &ua,
+                serde_json::json!({ "token_id": issued.token.id.to_string() }),
+                serde_json::json!({ "label": label }),
+            )?;
+            Ok(issued)
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    pub async fn list_api_tokens(&self, user_id: Uuid) -> Result<Vec<ApiToken>> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<ApiToken>> {
+            let s = store.lock().map_err(poisoned)?;
+            Ok(storage::api_tokens::list_for_user(&s.conn, &user_id)?)
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    pub async fn revoke_api_token(
+        &self,
+        token_id: Uuid,
+        by: Uuid,
+        ip: String,
+        ua: String,
+    ) -> Result<()> {
+        let store = self.store.clone();
+        let audit = self.audit.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let s = store.lock().map_err(poisoned)?;
+            storage::api_tokens::revoke(&s.conn, &token_id)?;
+            let mut a = audit.lock().map_err(poisoned)?;
+            write_event(
+                &mut a,
+                "api_token.revoked",
+                audit::Outcome::Success,
+                Some(by),
+                &ip,
+                &ua,
+                serde_json::json!({ "token_id": token_id.to_string() }),
+                serde_json::json!({}),
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    /// Verify a bearer token and resolve to the owning user. Updates
+    /// `last_seen_at` on success. Returns None if the token is unknown,
+    /// revoked, or the owning user is disabled.
+    pub async fn verify_api_token(
+        &self,
+        raw_token: String,
+    ) -> Result<Option<(ApiToken, User)>> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || -> Result<Option<(ApiToken, User)>> {
+            let s = store.lock().map_err(poisoned)?;
+            let token = match storage::api_tokens::find_valid_by_raw(&s.conn, &raw_token)? {
+                Some(t) => t,
+                None => return Ok(None),
+            };
+            let user = match storage::users::find_by_id(&s.conn, &token.user_id)? {
+                Some(u) => u,
+                None => return Ok(None),
+            };
+            if user.disabled_at.is_some() {
+                return Ok(None);
+            }
+            Ok(Some((token, user)))
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    pub async fn list_recent_shares(&self, limit: u32) -> Result<Vec<ShareListItem>> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<ShareListItem>> {
+            let s = store.lock().map_err(poisoned)?;
+            Ok(storage::shares::list_recent(&s.conn, limit)?)
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
     pub async fn revoke_share(
         &self,
         share_id: Uuid,
@@ -405,6 +597,17 @@ impl App {
 
 fn poisoned<T>(_: std::sync::PoisonError<T>) -> ServiceError {
     ServiceError::Internal("mutex poisoned".into())
+}
+
+/// Truncate a redeem URL token for audit logs — full token is a secret, but
+/// a short prefix helps an assessor correlate denied attempts without
+/// exposing the whole credential.
+fn short_token(t: &str) -> String {
+    if t.len() > 6 {
+        format!("{}…", &t[..6])
+    } else {
+        t.to_string()
+    }
 }
 
 fn write_event(

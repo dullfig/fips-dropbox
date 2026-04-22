@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Audit log &middot; fips-dropbox{% endblock %}
+{% block heading %}Audit log{% endblock %}
+{% block header_right %}
+<a href="/audit.csv{{ csv_query }}">Export CSV</a>
+&middot;
+<a href="/">Dashboard</a>
+{% endblock %}
+{% block content %}
+
+{% if chain_valid %}
+<div class="card success">
+  <strong>&#10003; Hash chain verified.</strong>
+  <span class="muted">{{ events_checked }} event{% if events_checked != 1 %}s{% endif %} on disk, chain intact from genesis.</span>
+</div>
+{% else %}
+<div class="card error">
+  <strong>&#10005; Hash chain broken at event index {{ break_at_display }}.</strong>
+  <span class="muted">The log has been tampered with or is corrupted. Preserve the file and investigate.</span>
+</div>
+{% endif %}
+
+<form class="card" method="get" action="/audit">
+  <label>Filter by event prefix
+    <select name="filter" onchange="this.form.submit()">
+      <option value=""{% if filter_value == "" %} selected{% endif %}>All events</option>
+      <option value="auth."{% if filter_value == "auth." %} selected{% endif %}>auth.*</option>
+      <option value="share."{% if filter_value == "share." %} selected{% endif %}>share.*</option>
+      <option value="api_token."{% if filter_value == "api_token." %} selected{% endif %}>api_token.*</option>
+    </select>
+  </label>
+  <noscript><button type="submit">Apply</button></noscript>
+</form>
+
+<div class="card">
+  {% if events.is_empty() %}
+    <p class="muted">No events match.</p>
+  {% else %}
+    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+      <thead>
+        <tr style="text-align: left; border-bottom: 1px solid #ddd;">
+          <th style="padding: 6px 4px;">Timestamp (UTC)</th>
+          <th style="padding: 6px 4px;">Event</th>
+          <th style="padding: 6px 4px;">Outcome</th>
+          <th style="padding: 6px 4px;">Actor</th>
+          <th style="padding: 6px 4px;">Target / meta</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in events %}
+        <tr style="border-bottom: 1px solid #f0f0f0; vertical-align: top;">
+          <td style="padding: 6px 4px;" class="mono muted">{{ e.ts }}</td>
+          <td style="padding: 6px 4px;" class="mono">{{ e.event }}</td>
+          <td style="padding: 6px 4px;">
+            {% if e.outcome == "success" %}<span style="color: #186329;">{{ e.outcome }}</span>
+            {% else if e.outcome == "denied" %}<span style="color: #a33;">{{ e.outcome }}</span>
+            {% else %}<span style="color: #b57a00;">{{ e.outcome }}</span>
+            {% endif %}
+          </td>
+          <td style="padding: 6px 4px;" class="muted">
+            <div class="mono">{{ e.actor_short }}</div>
+            <div style="font-size: 11px;">{{ e.actor_ip }}</div>
+          </td>
+          <td style="padding: 6px 4px;" class="mono muted" style="font-size: 11px; word-break: break-all;">
+            {{ e.target_meta_short }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+{% endblock %}
