@@ -85,8 +85,26 @@ async fn run_service() -> anyhow::Result<()> {
     let store = storage::Store::open(&cfg.db_path, &cfg.blobs_dir)?;
     let audit_log = audit::Log::open(&cfg.audit_log_path)?;
 
-    let email: Arc<dyn notifier::EmailSender> = Arc::new(notifier::Null);
+    let (email, email_configured): (Arc<dyn notifier::EmailSender>, bool) = match cfg.smtp {
+        Some(smtp_cfg) => match notifier::SmtpSender::new(smtp_cfg) {
+            Ok(s) => {
+                tracing::info!(relay = %s.summary(), "SMTP: configured");
+                (Arc::new(s), true)
+            }
+            Err(e) => {
+                tracing::error!(?e, "SMTP configured but failed to initialize; using Null sender");
+                (Arc::new(notifier::Null), false)
+            }
+        },
+        None => {
+            tracing::warn!(
+                "SMTP: not configured; access codes must be delivered manually"
+            );
+            (Arc::new(notifier::Null), false)
+        }
+    };
     let sms: Arc<dyn notifier::SmsSender> = Arc::new(notifier::Null);
+    let sms_configured = false;
 
     let app = Arc::new(service::App {
         store: Arc::new(std::sync::Mutex::new(store)),
@@ -96,6 +114,8 @@ async fn run_service() -> anyhow::Result<()> {
         sms,
         public_base_url: cfg.public_base_url.clone(),
         fips_mode_enabled,
+        email_configured,
+        sms_configured,
     });
 
     let router = web::router(app);

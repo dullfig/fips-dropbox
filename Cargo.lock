@@ -119,6 +119,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "time",
  "uuid",
@@ -975,6 +976,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "toml",
  "tracing",
 ]
 
@@ -2002,6 +2004,7 @@ version = "0.1.0"
 dependencies = [
  "askama",
  "async-trait",
+ "audit",
  "axum",
  "serde",
  "serde_json",

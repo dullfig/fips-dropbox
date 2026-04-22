@@ -684,8 +684,8 @@ async fn share_new_post(
                 vendor_phone: created.vendor_phone,
                 share_url: created.share_url,
                 access_code: created.access_code,
-                notifications_sent: false,
-                sms_sent: has_phone,
+                notifications_sent: app.email_configured,
+                sms_sent: has_phone && app.sms_configured,
             })
             .map(IntoResponse::into_response)
         }
