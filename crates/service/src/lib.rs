@@ -50,6 +50,10 @@ pub struct App {
     /// FIPS mode status captured at startup (from BCryptGetFipsAlgorithmMode).
     /// Static after boot; services restart to re-check.
     pub fips_mode_enabled: bool,
+    /// True when a real email sender (not Null) was constructed at startup.
+    pub email_configured: bool,
+    /// True when a real SMS sender (not Null) was constructed at startup.
+    pub sms_configured: bool,
 }
 
 // ---------------------------------------------------------------------------

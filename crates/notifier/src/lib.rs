@@ -10,6 +10,8 @@ use thiserror::Error;
 pub mod smtp;
 pub mod twilio;
 
+pub use smtp::{SmtpConfig, SmtpSender, TlsMode};
+
 #[derive(Debug, Error)]
 pub enum NotifyError {
     #[error("transport: {0}")]

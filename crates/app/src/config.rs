@@ -9,6 +9,10 @@ pub struct Config {
     pub blobs_dir: PathBuf,
     pub audit_log_path: PathBuf,
     pub kek_path: PathBuf,
+    /// Optional SMTP relay. When absent, email delivery falls back to the
+    /// Null sender (access codes must be delivered manually).
+    #[serde(default)]
+    pub smtp: Option<notifier::SmtpConfig>,
 }
 
 impl Default for Config {
@@ -20,6 +24,7 @@ impl Default for Config {
             blobs_dir: PathBuf::from(r"C:\ProgramData\FipsDropbox\blobs"),
             audit_log_path: PathBuf::from(r"C:\ProgramData\FipsDropbox\logs\audit.jsonl"),
             kek_path: PathBuf::from(r"C:\ProgramData\FipsDropbox\kek.bin"),
+            smtp: None,
         }
     }
 }
