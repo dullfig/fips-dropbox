@@ -9,6 +9,7 @@ description = "HTTP layer: axum router, handlers, Askama templates."
 
 [dependencies]
 service = { path = "../service" }
+audit = { path = "../audit" }
 axum.workspace = true
 tokio.workspace = true
 tower.workspace = true

@@ -15,3 +15,6 @@ thiserror.workspace = true
 time.workspace = true
 hex.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

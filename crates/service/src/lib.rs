@@ -99,6 +99,12 @@ pub struct RedeemResponse {
     pub sha256: [u8; 32],
 }
 
+pub struct AuditView {
+    pub events: Vec<audit::Event>,
+    pub verification: audit::ChainVerification,
+    pub total_on_disk: usize,
+}
+
 // ---------------------------------------------------------------------------
 // App methods
 // ---------------------------------------------------------------------------
@@ -369,6 +375,42 @@ impl App {
                 filename: print.filename,
                 content,
                 sha256: print.sha256_plaintext,
+            })
+        })
+        .await
+        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    }
+
+    // ----- Audit log -------------------------------------------------------
+
+    pub async fn list_audit_events(
+        &self,
+        event_prefix: Option<String>,
+        limit: usize,
+    ) -> Result<AuditView> {
+        let audit = self.audit.clone();
+        tokio::task::spawn_blocking(move || -> Result<AuditView> {
+            let log = audit.lock().map_err(poisoned)?;
+            let all = log.read_all()?;
+            let total_on_disk = all.len();
+            let verification = audit::verify_chain(&all)?;
+
+            let filtered: Vec<audit::Event> = match event_prefix.as_deref() {
+                Some(p) if !p.is_empty() => all
+                    .into_iter()
+                    .filter(|e| e.event.starts_with(p))
+                    .collect(),
+                _ => all,
+            };
+            let start = filtered.len().saturating_sub(limit);
+            let mut page: Vec<audit::Event> =
+                filtered.into_iter().skip(start).collect();
+            // Newest first for display.
+            page.reverse();
+            Ok(AuditView {
+                events: page,
+                verification,
+                total_on_disk,
             })
         })
         .await

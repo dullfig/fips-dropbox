@@ -45,6 +45,8 @@ pub fn router(app: Arc<service::App>) -> Router {
         )
         .route("/shares", get(shares_list_get))
         .route("/shares/:id/revoke", post(share_revoke))
+        .route("/audit", get(audit_get))
+        .route("/audit.csv", get(audit_csv))
         .route("/tokens", get(tokens_get).post(tokens_post))
         .route("/tokens/:id/revoke", post(token_revoke))
         .route(
@@ -82,6 +84,26 @@ struct DashboardPage {
 struct RedeemPromptPage {
     token: String,
     error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "audit.html")]
+struct AuditPage {
+    events: Vec<AuditRow>,
+    chain_valid: bool,
+    events_checked: usize,
+    break_at_display: String,
+    filter_value: String,
+    csv_query: String,
+}
+
+struct AuditRow {
+    ts: String,
+    event: String,
+    outcome: String,
+    actor_short: String,
+    actor_ip: String,
+    target_meta_short: String,
 }
 
 #[derive(Template)]
@@ -220,6 +242,194 @@ async fn login_post(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Audit log viewer + CSV export
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct AuditQuery {
+    #[serde(default)]
+    filter: String,
+}
+
+async fn audit_get(
+    State(app): State<Arc<service::App>>,
+    _user: CurrentUser,
+    axum::extract::Query(q): axum::extract::Query<AuditQuery>,
+) -> Result<Html<String>, StatusCode> {
+    let filter = if q.filter.is_empty() {
+        None
+    } else {
+        Some(q.filter.clone())
+    };
+    let view = app.list_audit_events(filter, 500).await.map_err(|e| {
+        tracing::error!(?e, "list_audit_events");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let rows = view
+        .events
+        .iter()
+        .map(|e| AuditRow {
+            ts: e
+                .ts
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            event: e.event.clone(),
+            outcome: match e.outcome {
+                audit::Outcome::Success => "success",
+                audit::Outcome::Failure => "failure",
+                audit::Outcome::Denied => "denied",
+            }
+            .to_string(),
+            actor_short: e
+                .actor
+                .user_id
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "(anon)".to_string()),
+            actor_ip: e.actor.ip.clone(),
+            target_meta_short: short_target_meta(&e.target, &e.meta),
+        })
+        .collect();
+
+    let break_at_display = view
+        .verification
+        .break_at
+        .map(|i| i.to_string())
+        .unwrap_or_default();
+
+    let csv_query = if q.filter.is_empty() {
+        String::new()
+    } else {
+        format!("?filter={}", urlencode(&q.filter))
+    };
+
+    render(&AuditPage {
+        events: rows,
+        chain_valid: view.verification.valid,
+        events_checked: view.verification.events_checked,
+        break_at_display,
+        filter_value: q.filter,
+        csv_query,
+    })
+}
+
+async fn audit_csv(
+    State(app): State<Arc<service::App>>,
+    _user: CurrentUser,
+    axum::extract::Query(q): axum::extract::Query<AuditQuery>,
+) -> Result<Response, StatusCode> {
+    let filter = if q.filter.is_empty() {
+        None
+    } else {
+        Some(q.filter)
+    };
+    let view = app
+        .list_audit_events(filter, 100_000)
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "audit_csv list");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut csv = String::new();
+    csv.push_str("ts,event,outcome,user_id,ip,ua,target,meta,prev_hash,hash\n");
+    for e in view.events.iter().rev() {
+        // rev() to write oldest-first in the CSV (natural for assessor review)
+        csv.push_str(&csv_row(e));
+    }
+
+    let filename = format!(
+        "fips-dropbox-audit-{}.csv",
+        time::OffsetDateTime::now_utc()
+            .format(&time::macros::format_description!("[year][month][day]-[hour][minute]"))
+            .unwrap_or_else(|_| "export".to_string())
+    );
+
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename),
+            ),
+        ],
+        csv,
+    )
+        .into_response())
+}
+
+fn csv_row(e: &audit::Event) -> String {
+    fn esc(s: &str) -> String {
+        if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    }
+    let ts = e
+        .ts
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let outcome = match e.outcome {
+        audit::Outcome::Success => "success",
+        audit::Outcome::Failure => "failure",
+        audit::Outcome::Denied => "denied",
+    };
+    let user_id = e.actor.user_id.as_deref().unwrap_or("");
+    format!(
+        "{},{},{},{},{},{},{},{},{},{}\n",
+        esc(&ts),
+        esc(&e.event),
+        esc(outcome),
+        esc(user_id),
+        esc(&e.actor.ip),
+        esc(&e.actor.ua),
+        esc(&e.target.to_string()),
+        esc(&e.meta.to_string()),
+        esc(&e.prev_hash),
+        esc(&e.hash),
+    )
+}
+
+fn short_id(id: &str) -> String {
+    if id.len() > 13 {
+        format!("{}…{}", &id[..8], &id[id.len() - 4..])
+    } else {
+        id.to_string()
+    }
+}
+
+fn short_target_meta(target: &serde_json::Value, meta: &serde_json::Value) -> String {
+    let t = target.to_string();
+    let m = meta.to_string();
+    let combined = if t == "{}" && m == "{}" {
+        String::new()
+    } else if t == "{}" {
+        m
+    } else if m == "{}" {
+        t
+    } else {
+        format!("{} {}", t, m)
+    };
+    if combined.len() > 200 {
+        format!("{}…", &combined[..197])
+    } else {
+        combined
+    }
+}
+
+fn urlencode(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            _ => format!("%{:02X}", c as u32),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
